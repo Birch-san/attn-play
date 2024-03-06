@@ -109,10 +109,10 @@ def edotv(
   exp_t = get_exp(tensor)
 
   # TODO: provide a way for user to pass in an already-allocated buffer for each of these
-  sign_i = input.sign()
-  sign_t = tensor.sign()
-  # TODO: is there a bitwise way to do this that's cheaper? would be nice to be able to say no multiplication was used!
-  sign_prods = sign_i * sign_t
+  sign_i = input.signbit()
+  sign_t = tensor.signbit()
+  # I am trying to do sign_i * sign_t, is this right?
+  sign_prods = ~((sign_i & sign_t) | (~sign_i & ~sign_t))
   # simplify 0 and +ve signs to be equivalent, so we can use as an index
   sign_prods_clamped = sign_prods.clamp_max(0)
   prod_iszero = (input == 0) | (tensor == 0)
