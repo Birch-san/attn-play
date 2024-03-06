@@ -60,17 +60,20 @@ def edotv(input: FloatTensor, tensor: FloatTensor, *, out: Optional[IntTensor] =
   assert input.dtype in emaxs
   # exp_i = get_exp(input)
   # exp_t = get_exp(tensor)
+  emin: int = emins[input.dtype]
   emax: int = emaxs[input.dtype]
   elems = input.size(-1)
   # worst-case scenario of multiplying a pair is that you square the worst-case element, which in exponent-space means doubling
   # math.log2((2**8) ** 2) == 16
+  min_product = emin*2
   max_product = emax*2
   # worst-case scenario of adding a product is that you double the worst-case element, which in exponent-space means adding 1
   # this can happen per product accumulated, so n-1 times
-  max_sum_exp = elems-1
-  max_dot_exp = max_product+max_sum_exp
+  max_accs = elems-1
+  min_dot_exp = min_product-max_accs
+  max_dot_exp = max_product+max_accs
+  assert min_dot_exp >= torch.iinfo(acc_dtype).min
   assert max_dot_exp <= torch.iinfo(acc_dtype).max
-  # uhh we need to think about positive versus negative exp range
 
   # 1e8 * 1e8
   # 2e8
