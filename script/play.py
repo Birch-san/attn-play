@@ -112,11 +112,20 @@ def edotv(
   sign_i = input.sign()
   sign_t = tensor.sign()
   # TODO: is there a bitwise way to do this that's cheaper? would be nice to be able to say no multiplication was used!
-  #       and beware: sign 0 exists too, but for our purposes we could simplify that to 1 if it helps at all
   sign_prods = sign_i * sign_t
+  # simplify 0 and +ve signs to be equivalent, so we can use as an index
+  sign_prods_clamped = sign_prods.clamp_max(0)
+  prod_iszero = (input == 0) | (tensor == 0)
+  prod_isnan = input.isnan() | tensor.isnan()
+  prod_isinf = (input.isinf() | tensor.isinf()) & (prod_iszero == 0)
+
+  # TODO: provide a way for user to pass in an already-allocated buffer
+  dp_isnan = input.new_zeros((1,), dtype=torch.bool)
+  # TODO: provide a way for user to pass in an already-allocated buffer
+  dp_isinf = input.new_zeros((1,), dtype=torch.bool)
 
   # TODO: this could probably use a smaller dtype. only needs to be able to fit min_product ≤ x ≤ max_product
-  dp_dtype = acc_dtype
+  # dp_dtype = acc_dtype
   # TODO: provide a way for user to pass in an already-allocated buffer
   # e_prod = input.new_zeros((1,), dtype=dp_dtype)
 
@@ -129,9 +138,19 @@ def edotv(
     # exponent-space elementwise product
     # TODO: sum exponents into re-usable buffer instead of re-allocating e_prod
     e_prod = e_i + e_t
-    sign_prod = sign_prods[ix]
-    # TODO: add to the appropriate counter for this e_prod,sign_prod acc
+    iszero = prod_iszero[ix]
+    isnan = prod_isnan[ix]
+    isinf = prod_isinf[ix]
+    dp_isnan |= isnan
+    dp_isinf |= isinf
+
+    sign_prod = sign_prods_clamped[ix]
+    acc[sign_prod, e_prod] += ~iszero
     ix -= 1
+  # TODO: now read through all the per-exp counters in acc, find pairs, carry those up to larger exponents, until we find
+  # largest exponent among +ve products and largest exponent among -ve products, then pick whichever of those is larger
+  # (or return 0 if equal)
+  pass
 
 
 
