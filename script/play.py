@@ -7,13 +7,14 @@ device = torch.device('cpu')
 gen = torch.Generator(device=device)
 
 seed = 42
-# std = 2**4
-# m0 = torch.randn([2, 2], generator=gen, device=device) * std
-# m1 = torch.randn([2, 2], generator=gen, device=device) * std
-m0 = torch.tensor([[0.,   1.],
-                   [15.5, 0.4]], device=device)
-m1 = torch.tensor([[0.,    1.],
-                   [-15.5, 0.23]], device=device)
+std = 2**4
+fp_dtype = torch.float16
+m0 = torch.randn([2, 2], generator=gen, device=device, dtype=fp_dtype) * std
+m1 = torch.randn([2, 2], generator=gen, device=device, dtype=fp_dtype) * std
+# m0 = torch.tensor([[0.,   1.],
+#                    [15.5, 0.4]], device=device)
+# m1 = torch.tensor([[0.,    1.],
+#                    [-15.5, 0.23]], device=device)
 s = m0 @ m1
 
 def get_exp(input: FloatTensor) -> IntTensor:
@@ -71,13 +72,13 @@ def edotv(
   elems = input.size(-1)
   # worst-case scenario of multiplying a pair is that you square the worst-case element, which in exponent-space means doubling
   # math.log2((2**8) ** 2) == 16
-  min_product = emin*2
-  max_product = emax*2
+  min_product_exp = emin*2
+  max_product_exp = emax*2
   # worst-case scenario of adding a product is that you double the worst-case element, which in exponent-space means adding 1
   # this can happen per product accumulated, so n-1 times
   max_accs = elems-1
-  min_dot_exp = min_product-max_accs
-  max_dot_exp = max_product+max_accs
+  min_dot_exp = min_product_exp-max_accs
+  max_dot_exp = max_product_exp+max_accs
   assert min_dot_exp >= torch.iinfo(acc_dtype).min
   assert max_dot_exp <= torch.iinfo(acc_dtype).max
 
@@ -93,14 +94,15 @@ def edotv(
     assert out.ndim == 1
     assert out.shape == input.shape
   
+  # (product_sign, exp_sign, exp_magnitude)
+  # we could use exp_magnitude-1 I think but may as well use power-of-2 buffer
+  # acc_shape = (2, 2, torch.iinfo(acc_dtype).bits//2)
+  acc_shape = (2, 2, max_product_exp)
   if acc is None:
-    acc = input.new_zeros((2, torch.iinfo(acc_dtype).bits,), dtype=acc_dtype)
+    acc = input.new_zeros(acc_shape, dtype=acc_dtype, requires_grad=False)
   else:
     assert acc.dtype == acc_dtype
-    assert acc.ndim == 2
-    assert acc.size(-1) == torch.iinfo(acc_dtype).bits
-    # one batch into which to accumulate positive products, another for negative
-    assert acc.size(-2) == 2
+    assert acc.shape == acc_shape
     assert not acc.requires_grad
     acc.zero_()
   
@@ -112,9 +114,7 @@ def edotv(
   sign_i = input.signbit()
   sign_t = tensor.signbit()
   # I am trying to do sign_i * sign_t, is this right?
-  sign_prods = ~((sign_i & sign_t) | (~sign_i & ~sign_t))
-  # simplify 0 and +ve signs to be equivalent, so we can use as an index
-  sign_prods_clamped = sign_prods.clamp_max(0)
+  sign_prods = sign_i != sign_t
   prod_iszero = (input == 0) | (tensor == 0)
   prod_isnan = input.isnan() | tensor.isnan()
   prod_isinf = (input.isinf() | tensor.isinf()) & (prod_iszero == 0)
@@ -138,14 +138,15 @@ def edotv(
     # exponent-space elementwise product
     # TODO: sum exponents into re-usable buffer instead of re-allocating e_prod
     e_prod = e_i + e_t
+    e_prod_sign = e_prod.signbit()
     iszero = prod_iszero[ix]
     isnan = prod_isnan[ix]
     isinf = prod_isinf[ix]
     dp_isnan |= isnan
     dp_isinf |= isinf
 
-    sign_prod = sign_prods_clamped[ix]
-    acc[sign_prod, e_prod] += ~iszero
+    sign_prod = sign_prods[ix]
+    acc[sign_prod.int(), e_prod_sign.int(), e_prod] += (~iszero).int()
     ix -= 1
   # TODO: now read through all the per-exp counters in acc, find pairs, carry those up to larger exponents, until we find
   # largest exponent among +ve products and largest exponent among -ve products, then pick whichever of those is larger
