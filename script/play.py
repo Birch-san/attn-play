@@ -192,6 +192,7 @@ def edotv(
       else:
         out.copy_(-(ix - product_exp_offset))
       return out
+    ix -= 1
   return out
 
 
