@@ -193,6 +193,8 @@ def edotv(
         out.copy_(-(ix - product_exp_offset))
       return out
     ix -= 1
+  # this indicates that for all magnitudes at which +ve counted an exp, there was a corresponding
+  # -ve counterpart also, and adding both together gave a net of zero (not detectable by the dp_iszero fastpath)
   return out
 
 
