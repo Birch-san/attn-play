@@ -9,12 +9,12 @@ gen = torch.Generator(device=device)
 seed = 42
 std = 2**4
 fp_dtype = torch.float16
-m0 = torch.randn([2, 2], generator=gen, device=device, dtype=fp_dtype) * std
-m1 = torch.randn([2, 2], generator=gen, device=device, dtype=fp_dtype) * std
-# m0 = torch.tensor([[0.,   1.],
-#                    [15.5, 0.4]], device=device)
-# m1 = torch.tensor([[0.,    1.],
-#                    [-15.5, 0.23]], device=device)
+# m0 = torch.randn([2, 2], generator=gen, device=device, dtype=fp_dtype) * std
+# m1 = torch.randn([2, 2], generator=gen, device=device, dtype=fp_dtype) * std
+m0 = torch.tensor([[0.,   1.],
+                   [15.5, 0.4]], device=device, dtype=fp_dtype)
+m1 = torch.tensor([[0.,    1.],
+                   [-15.5, 0.23]], device=device, dtype=fp_dtype)
 s = m0 @ m1
 
 def get_exp(input: FloatTensor) -> IntTensor:
@@ -81,23 +81,26 @@ def edotv(
   max_dot_exp = max_product_exp+max_accs
   assert min_dot_exp >= torch.iinfo(acc_dtype).min
   assert max_dot_exp <= torch.iinfo(acc_dtype).max
+  # does this need a +1 to leave slots for all +ve, all -ve and 0? I guess let's throw one in there
+  product_exp_range = (max_product_exp-min_product_exp)+1
+  product_exp_offset = min_product_exp
 
   # 1e8 * 1e8
   # 2e8
   # if two worst-case 
 
+  out_shape = (1,)
   if out is None:
-    out = torch.zeros_like(input, dtype=acc_dtype)
+    out = input.new_zeros(out_shape, dtype=acc_dtype)
   else:
     assert not out.is_floating_point()
     assert out.is_signed()
-    assert out.ndim == 1
-    assert out.shape == input.shape
+    assert out.shape == out_shape
   
   # (product_sign, exp_sign, exp_magnitude)
   # we could use exp_magnitude-1 I think but may as well use power-of-2 buffer
   # acc_shape = (2, 2, torch.iinfo(acc_dtype).bits//2)
-  acc_shape = (2, 2, max_product_exp)
+  acc_shape = (2, product_exp_range)
   if acc is None:
     acc = input.new_zeros(acc_shape, dtype=acc_dtype, requires_grad=False)
   else:
@@ -122,7 +125,8 @@ def edotv(
   # TODO: provide a way for user to pass in an already-allocated buffer
   dp_isnan = input.new_zeros((1,), dtype=torch.bool)
   # TODO: provide a way for user to pass in an already-allocated buffer
-  dp_isinf = input.new_zeros((1,), dtype=torch.bool)
+  dp_isposinf = input.new_zeros((1,), dtype=torch.bool)
+  dp_isneginf = input.new_zeros((1,), dtype=torch.bool)
 
   # TODO: this could probably use a smaller dtype. only needs to be able to fit min_product ≤ x ≤ max_product
   # dp_dtype = acc_dtype
@@ -136,22 +140,55 @@ def edotv(
     # exponents
     e_i, e_t = exp_i[ix], exp_t[ix]
     # exponent-space elementwise product
-    # TODO: sum exponents into re-usable buffer instead of re-allocating e_prod
     e_prod = e_i + e_t
-    e_prod_sign = e_prod.signbit()
+    assert e_prod >= emin
+    assert e_prod <= emax
+    e_prod_ix = e_prod + product_exp_offset
     iszero = prod_iszero[ix]
     isnan = prod_isnan[ix]
     isinf = prod_isinf[ix]
-    dp_isnan |= isnan
-    dp_isinf |= isinf
-
     sign_prod = sign_prods[ix]
-    acc[sign_prod.int(), e_prod_sign.int(), e_prod] += (~iszero).int()
+    dp_isposinf |= isinf & ~sign_prod
+    dp_isneginf |= isinf & sign_prod
+
+    dp_isnan |= isnan
+    # if accumulator was already +inf, adding -inf should result in NaN. and vice-versa.
+    dp_isnan |= isinf & ((dp_isposinf & sign_prod) | (dp_isneginf & ~sign_prod))
+    
+    acc[sign_prod.int(), e_prod_ix] += (~iszero).int()
     ix -= 1
-  # TODO: now read through all the per-exp counters in acc, find pairs, carry those up to larger exponents, until we find
-  # largest exponent among +ve products and largest exponent among -ve products, then pick whichever of those is larger
-  # (or return 0 if equal)
-  pass
+  if dp_isnan:
+    out.copy_(math.nan)
+    return out
+  if dp_isposinf:
+    out.copy_(math.inf)
+    return out
+  if dp_isneginf:
+    out.copy_(-math.inf)
+    return out
+  # now read through all the per-exp counters in acc, find pairs, carry those up to larger exponents
+  ix = 0
+  while ix < acc.size(-1)-1:
+    couples = acc[:,ix]//2
+    acc[:,ix+1] += couples
+    acc[:,ix] -= couples
+    ix += 1
+  # identify largest exponent
+  ix = acc.size(-1) - 1
+  while ix > 0:
+    if acc[0] > acc[1]:
+      if acc[0] > 1:
+        out.copy_(math.inf)
+      else:
+        out.copy_(ix - product_exp_offset)
+      return out
+    elif acc[1] > acc[0]:
+      if acc[1] > 1:
+        out.copy_(-math.inf)
+      else:
+        out.copy_(-(ix - product_exp_offset))
+      return out
+  return out
 
 
 
