@@ -125,6 +125,7 @@ def edotv(
   # TODO: provide a way for user to pass in an already-allocated buffer
   dp_isposinf = input.new_zeros((1,), dtype=torch.bool)
   dp_isneginf = input.new_zeros((1,), dtype=torch.bool)
+  dp_iszero = input.new_ones((1,), dtype=torch.bool)
 
   ix = input.size(-1) - 1
   while ix >= 0:
@@ -154,6 +155,7 @@ def edotv(
     dp_isneginf |= isinf & sign_prod
     
     acc[sign_prod.int(), e_prod_ix] += (~iszero).int()
+    dp_iszero &= iszero
     ix -= 1
 
   if dp_isposinf:
@@ -161,6 +163,10 @@ def edotv(
     return out
   if dp_isneginf:
     out.copy_(-math.inf)
+    return out
+  
+  # early-exit; if all elementwise products were zero, then we can skip looking for largest exponent
+  if dp_iszero:
     return out
 
   # now read through all the per-exp counters in acc, find pairs, carry those up to larger exponents
@@ -173,14 +179,15 @@ def edotv(
   # identify largest exponent
   ix = acc.size(-1) - 1
   while ix > 0:
-    if acc[0] > acc[1]:
-      if acc[0] > 1:
+    # check whether +ve or -ve holds the larger exp
+    if acc[0,ix] > acc[1,ix]:
+      if acc[0,ix] > 1:
         out.copy_(math.inf)
       else:
         out.copy_(ix - product_exp_offset)
       return out
-    elif acc[1] > acc[0]:
-      if acc[1] > 1:
+    elif acc[1,ix] > acc[0,ix]:
+      if acc[1,ix] > 1:
         out.copy_(-math.inf)
       else:
         out.copy_(-(ix - product_exp_offset))
