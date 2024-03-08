@@ -123,20 +123,13 @@ def edotv(
   prod_isinf = (input.isinf() | tensor.isinf()) & (prod_iszero == 0)
 
   # TODO: provide a way for user to pass in an already-allocated buffer
-  dp_isnan = input.new_zeros((1,), dtype=torch.bool)
-  # TODO: provide a way for user to pass in an already-allocated buffer
   dp_isposinf = input.new_zeros((1,), dtype=torch.bool)
   dp_isneginf = input.new_zeros((1,), dtype=torch.bool)
-
-  # TODO: this could probably use a smaller dtype. only needs to be able to fit min_product ≤ x ≤ max_product
-  # dp_dtype = acc_dtype
-  # TODO: provide a way for user to pass in an already-allocated buffer
-  # e_prod = input.new_zeros((1,), dtype=dp_dtype)
 
   ix = input.size(-1) - 1
   while ix >= 0:
     # operands (for multiplication)
-    o_i, o_t = input[ix], tensor[ix]
+    # o_i, o_t = input[ix], tensor[ix]
     # exponents
     e_i, e_t = exp_i[ix], exp_t[ix]
     # exponent-space elementwise product
@@ -144,28 +137,32 @@ def edotv(
     assert e_prod >= emin
     assert e_prod <= emax
     e_prod_ix = e_prod + product_exp_offset
-    iszero = prod_iszero[ix]
     isnan = prod_isnan[ix]
+    if isnan:
+      out.copy_(math.nan)
+      return out
+    iszero = prod_iszero[ix]
     isinf = prod_isinf[ix]
     sign_prod = sign_prods[ix]
+
+    # if accumulator was already +inf, adding -inf should result in NaN. and vice-versa.
+    if isinf & ((dp_isposinf & sign_prod) | (dp_isneginf & ~sign_prod)):
+      out.copy_(math.nan)
+      return out
+
     dp_isposinf |= isinf & ~sign_prod
     dp_isneginf |= isinf & sign_prod
-
-    dp_isnan |= isnan
-    # if accumulator was already +inf, adding -inf should result in NaN. and vice-versa.
-    dp_isnan |= isinf & ((dp_isposinf & sign_prod) | (dp_isneginf & ~sign_prod))
     
     acc[sign_prod.int(), e_prod_ix] += (~iszero).int()
     ix -= 1
-  if dp_isnan:
-    out.copy_(math.nan)
-    return out
+
   if dp_isposinf:
     out.copy_(math.inf)
     return out
   if dp_isneginf:
     out.copy_(-math.inf)
     return out
+
   # now read through all the per-exp counters in acc, find pairs, carry those up to larger exponents
   ix = 0
   while ix < acc.size(-1)-1:
